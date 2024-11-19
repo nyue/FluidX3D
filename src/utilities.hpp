@@ -20,6 +20,7 @@
 #endif // UTILITIES_REGEX
 #include <iostream>
 #include <thread> // contains <chrono>
+#include <functional> // for parallel_for(...)
 #undef min
 #undef max
 using std::string;
@@ -54,6 +55,41 @@ typedef uint64_t ulong;
 #define epsilon_double 2.2204460492503131E-16
 #define inf_double as_double(0x7FF0000000000000)
 #define nan_double as_double(0xFFFFFFFFFFFFFFFF)
+
+inline void parallel_for(const uint N, const uint threads, std::function<void(uint, uint)> lambda) { // usage: parallel_for(N, threads, [&](uint n, uint t) { ... });
+	vector<thread> thread_array(threads);
+	for(uint t=0u; t<threads; t++) thread_array[t] = thread([=]() {
+		for(ulong n=(ulong)N*(ulong)t/(ulong)threads; n<(ulong)N*(ulong)(t+1u)/(ulong)threads; n++) lambda((uint)n, t);
+	});
+	for(uint t=0u; t<threads; t++) thread_array[t].join();
+}
+inline void parallel_for(const uint N, const uint threads, std::function<void(uint)> lambda) { // usage: parallel_for(N, threads, [&](uint n) { ... });
+	vector<thread> thread_array(threads);
+	for(uint t=0u; t<threads; t++) thread_array[t] = thread([=]() {
+		for(ulong n=(ulong)N*(ulong)t/(ulong)threads; n<(ulong)N*(ulong)(t+1u)/(ulong)threads; n++) lambda((uint)n);
+	});
+	for(uint t=0u; t<threads; t++) thread_array[t].join();
+}
+inline void parallel_for(const uint N, std::function<void(uint)> lambda) { // usage: parallel_for(N, [&](uint n) { ... });
+	parallel_for(N, (uint)thread::hardware_concurrency(), lambda);
+}
+inline void parallel_for(const ulong N, const uint threads, std::function<void(ulong, uint)> lambda) { // usage: parallel_for(N, threads, [&](ulong n, uint t) { ... });
+	vector<thread> thread_array(threads);
+	for(uint t=0u; t<threads; t++) thread_array[t] = thread([=]() {
+		for(ulong n=N*(ulong)t/(ulong)threads; n<N*(ulong)(t+1u)/(ulong)threads; n++) lambda(n, t);
+	});
+	for(uint t=0u; t<threads; t++) thread_array[t].join();
+}
+inline void parallel_for(const ulong N, const uint threads, std::function<void(ulong)> lambda) { // usage: parallel_for(N, threads, [&](ulong n) { ... });
+	vector<thread> thread_array(threads);
+	for(uint t=0u; t<threads; t++) thread_array[t] = thread([=]() {
+		for(ulong n=N*(ulong)t/(ulong)threads; n<N*(ulong)(t+1u)/(ulong)threads; n++) lambda(n);
+	});
+	for(uint t=0u; t<threads; t++) thread_array[t].join();
+}
+inline void parallel_for(const ulong N, std::function<void(ulong)> lambda) { // usage: parallel_for(N, [&](ulong n) { ... });
+	parallel_for(N, (uint)thread::hardware_concurrency(), lambda);
+}
 
 class Clock {
 private:
@@ -204,11 +240,12 @@ inline float standard_deviation(const uint n, const float* const x) {
 	}
 	return (float)sqrt(s/(double)n);
 }
-inline float random(const float x=1.0f) {
-	return x*((float)rand()/(float)RAND_MAX);
+inline float random(uint& seed, const float x=1.0f) {
+	seed = (1103515245u*seed+12345u)%2147483648u; // standard C99 LCG
+	return x*(float)seed*4.65661287E-10f;
 }
-inline float random_symmetric(const float x=1.0f) {
-	return 2.0f*x*((float)rand()/(float)RAND_MAX-0.5f);
+inline float random_symmetric(uint& seed, const float x=1.0f) {
+	return 2.0f*x*(random(seed, 1.0f)-0.5f);
 }
 inline void lu_solve(float* M, float* x, float* b, const int N) { // solves system of N linear equations M*x=b
 	for(int i=0; i<N; i++) { // decompose M in M=L*U
@@ -1203,8 +1240,7 @@ struct floatN {
 	floatN(const uint N, const floatNxN& m); // forward-declare floatNxN constructor
 	floatN() = default;
 	~floatN() {
-		if(N==0u) delete[] V;
-		N = 0u;
+		delete[] V;
 	}
 	inline float& operator[](const uint i) {
 		return V[i];
@@ -1346,8 +1382,7 @@ struct floatNxN {
 	}
 	floatNxN() = default;
 	~floatNxN() {
-		if(N==0u) delete[] M;
-		N = 0u;
+		delete[] M;
 	}
 	inline float& operator[](const uint i) {
 		return M[i];
@@ -1947,8 +1982,7 @@ struct doubleN {
 	doubleN(const uint N, const doubleNxN& m); // forward-declare doubleNxN constructor
 	doubleN() = default;
 	~doubleN() {
-		if(N==0u) delete[] V;
-		N = 0u;
+		delete[] V;
 	}
 	inline double& operator[](const uint i) {
 		return V[i];
@@ -2090,8 +2124,7 @@ struct doubleNxN {
 	}
 	doubleNxN() = default;
 	~doubleNxN() {
-		if(N==0u) delete[] M;
-		N = 0u;
+		delete[] M;
 	}
 	inline double& operator[](const uint i) {
 		return M[i];
@@ -2328,6 +2361,37 @@ inline doubleN& doubleN::operator=(const doubleNxN& m) { // extract diagonal of 
 	this->V = new double[m.N];
 	for(uint i=0u; i<m.N; i++) this->V[i] = m.M[m.N*i+i];
 	return *this;
+}
+
+template<typename T> T lerp(const T& a, const T& b, const float t) {
+	return (1.0f-t)*a+t*b;
+}
+template<typename T> T hermite_spline(const T& a, const T& b, const T& va, const T& vb, const float t) {
+	const float cbt=cb(t), sqt=sq(t); // interpolates cubic spline between points a and b with velocities va and vb
+	return (2.0f*cbt-3.0f*sqt+1.0f)*a+(-2.0f*cbt+3.0f*sqt)*b+(cbt-2.0f*sqt+t)*va+(cbt-sqt)*vb;
+}
+template<typename T> T catmull_rom_spline(const T& a, const T& b, const T& c, const T& d, const float t) {
+	const float cbt=cb(t), sqt=sq(t); // interpolates cubic spline between points b and c
+	return (-0.5f*cbt+sqt-0.5f*t)*a+(1.5f*cbt-2.5f*sqt+1.0f)*b+(-1.5f*cbt+2.0f*sqt+0.5f*t)*c+(0.5f*cbt-0.5f*sqt)*d;
+}
+template<typename T> T catmull_rom(const vector<T>& points, const float t) {
+	const uint N = (uint)points.size(); // interpolates a smooth curve through all provided points, with t in [0, 1]
+	if(N==0u) {
+		return (T)0;
+	} else if(N==1u) {
+		return points[0];
+	} else if(N==2u) {
+		return lerp(points[0], points[1], t);
+	} else {
+		const float t_total = (float)(N-1u)*t;
+		const uint i = min((uint)t_total, N-2u); // spline segment
+		const float t = clamp(t_total-(float)i, 0.0f, 1.0f); // t within spline segment
+		const T a = i>0u ? points[i-1u] : 2.0f*points[0]-points[1];
+		const T b = points[i];
+		const T c = points[i+1u];
+		const T d = i+2u<N ? points[i+2u] : 2.0f*points[N-1u]-points[N-2u];
+		return catmull_rom_spline(a, b, c, d, t); // same as hermite_spline(b, c, 0.5f*(c-a), 0.5f*(d-b), t);
+	}
 }
 
 inline float plic_cube_reduced(const float V, const float n1, const float n2, const float n3) { // optimized solution from SZ and Kawano
@@ -2797,22 +2861,22 @@ inline string print_time(const double t) { // input: time in seconds, output: fo
 	       (dm?(dh&&m<10?"0"               :"")+to_string(m)+"m":"")+
 	           (dm&&s<10?"0"               :"")+to_string(s)+"s"    ;
 }
-inline string print_progress(const double x, const uint n=10u) {
-	const uint p = (uint)((double)n*x+0.5);
-	string s = "[";
-	for(uint i=0u; i<p; i++) s += "=";
-	for(uint i=p; i<n; i++) s += " ";
-	return s+"]";
+inline string print_percentage(const float x) {
+	return alignr(3u, to_uint(100.0f*x))+"%";
 }
-inline string print_percentage(const double x) {
-	return alignr(3u, to_uint(100.0*x))+"%";
+inline string print_progress(const float x, const int n=10) {
+	const int p = to_int((float)(n-7)*x);
+	string s = "[";
+	for(int i=0; i<p; i++) s += "=";
+	for(int i=p; i<n-7; i++) s += " ";
+	return s+"] "+print_percentage(x);
 }
 
 inline void print(const string& s="") {
 	std::cout << s;
 }
 inline void println(const string& s="") {
-	std::cout << s+'\n';
+	std::cout << s+"\n";
 }
 inline void reprint(const string& s="") {
 	std::cout << "\r"+s;
@@ -2936,6 +3000,15 @@ inline int color(const int red, const int green, const int blue) {
 inline int color(const int red, const int green, const int blue, const int alpha) {
 	return (alpha&255)<<24|(red&255)<<16|(green&255)<<8|(blue&255);
 }
+inline int color(const float red, const float green, const float blue) {
+	return clamp((int)(255.0f*red+0.5f), 0, 255)<<16|clamp((int)(255.0f*green+0.5f), 0, 255)<<8|clamp((int)(255.0f*blue+0.5f), 0, 255);
+}
+inline int color(const float red, const float green, const float blue, const float alpha) {
+	return clamp((int)(255.0f*alpha+0.5f), 0, 255)<<24|clamp((int)(255.0f*red+0.5f), 0, 255)<<16|clamp((int)(255.0f*green+0.5f), 0, 255)<<8|clamp((int)(255.0f*blue+0.5f), 0, 255);
+}
+inline int color(const float3 rgb) {
+	return color(rgb.x, rgb.y, rgb.z);
+}
 inline int red(const int color) {
 	return (color>>16)&255;
 }
@@ -2953,19 +3026,40 @@ inline int brightness(const int color) {
 }
 inline int grayscale(const int color) {
 	const int b = brightness(color);
-	return ::color(b, b, b);
+	return b<<16|b<<8|b;
 }
 inline int invert(const int color) { // invert color
-	return ::color(255-red(color), 255-green(color), 255-blue(color));
+	return (255-red(color))<<16|(255-green(color))<<8|(255-blue(color));
 }
 inline int invert_brightness(const int color) { // invert brightness, but retain color
 	const int r = red(color), g=green(color), b=blue(color);
 	return ::color(255-(g+b)/2, 255-(r+b)/2, 255-(r+g)/2);
 }
-inline int average_color(const int c1, const int c2) {
+inline int color_mul(const int c, const float x) { // c*x
+	const int r = min((int)fma((float)red  (c), x, 0.5f), 255);
+	const int g = min((int)fma((float)green(c), x, 0.5f), 255);
+	const int b = min((int)fma((float)blue (c), x, 0.5f), 255);
+	return r<<16|g<<8|b; // values are already clamped
+}
+inline int color_add(const int c1, const int c2) {
 	const int r1=red(c1), g1=green(c1), b1=blue(c1);
 	const int r2=red(c2), g2=green(c2), b2=blue(c2);
-	return color((r1+r2)/2, (g1+g2)/2, (b1+b2)/2);
+	return min(r1+r2, 255)<<16|min(g1+g2, 255)<<8|min(b1+b2, 255); // values are already clamped
+}
+inline int color_average(const int c1, const int c2) {
+	const int r1=red(c1), g1=green(c1), b1=blue(c1);
+	const int r2=red(c2), g2=green(c2), b2=blue(c2);
+	return ((r1+r2)/2)<<16|((g1+g2)/2)<<8|((b1+b2)/2);
+}
+inline int color_mix(const int c1, const int c2, const float w) { // w*c1+(1-w)*c2
+	const float3 fc1=float3((float)red(c1), (float)green(c1), (float)blue(c1)), fc2=float3((float)red(c2), (float)green(c2), (float)blue(c2));
+	const float3 fcm = w*fc1+(1.0f-w)*fc2+0.5f;
+	return color((int)fcm.x, (int)fcm.y, (int)fcm.z);
+}
+inline int color_mix_3(const int c0, const int c1, const int c2, const float w0, const float w1, const float w2) { // w1*c1+w2*c2+w3*c3, w0+w1+w2 = 1
+	const float3 fc0=float3((float)red(c0), (float)green(c0), (float)blue(c0)),  fc1=float3((float)red(c1), (float)green(c1), (float)blue(c1)), fc2=float3((float)red(c2), (float)green(c2), (float)blue(c2));
+	const float3 fcm = w0*fc0+w1*fc1+w2*fc2+0.5f;
+	return color((int)fcm.x, (int)fcm.y, (int)fcm.z);
 }
 inline float3 rgb_to_hsv(const int red, const int green, const int blue) {
 	const int cmax = max(max(red, green), blue);
@@ -2980,7 +3074,7 @@ inline float3 rgb_to_hsv(const int red, const int green, const int blue) {
 inline float3 rgb_to_hsv(const int color) {
 	return rgb_to_hsv(red(color), green(color), blue(color));
 }
-inline uint hsv_to_rgb(const float h, const float s, const float v) {
+inline int hsv_to_rgb(const float h, const float s, const float v) {
 	const float c = v*s;
 	const float x = c*(1.0f-fabs(fmod(h/60.0f, 2.0f)-1.0f));
 	const float m = v-c;
@@ -2991,11 +3085,72 @@ inline uint hsv_to_rgb(const float h, const float s, const float v) {
 	else if(h<240.0f) { g = x; b = c; }
 	else if(h<300.0f) { r = x; b = c; }
 	else if(h<360.0f) { r = c; b = x; }
-	return color((uchar)((r+m)*255.0f), (uchar)((g+m)*255.0f), (uchar)((b+m)*255.0f));
+	return color(r+m, g+m, b+m);
 }
-inline uint hsv_to_rgb(const float3& hsv) {
+inline int hsv_to_rgb(const float3& hsv) {
 	return hsv_to_rgb(hsv.x, hsv.y, hsv.z);
 }
+inline int colorscale_rainbow(float x) { // coloring scheme (float [0, 1] -> int color)
+	x = clamp(6.0f*(1.0f-x), 0.0f, 6.0f);
+	float r=0.0f, g=0.0f, b=0.0f; // black
+	if(x<1.2f) { // red - yellow
+		r = 1.0f;
+		g = x*0.83333333f;
+	} else if(x>=1.2f&&x<2.0f) { // yellow - green
+		r = 2.5f-x*1.25f;
+		g = 1.0f;
+	} else if(x>=2.0f&&x<3.0f) { // green - cyan
+		g = 1.0f;
+		b = x-2.0f;
+	} else if(x>=3.0f&&x<4.0f) { // cyan - blue
+		g = 4.0f-x;
+		b = 1.0f;
+	} else if(x>=4.0f&&x<5.0f) { // blue - violet
+		r = x*0.4f-1.6f;
+		b = 3.0f-x*0.5f;
+	} else { // violet - black
+		r = 2.4f-x*0.4f;
+		b = 3.0f-x*0.5f;
+	}
+	return color(r, g, b);
+}
+inline int colorscale_iron(float x) { // coloring scheme (float [0, 1] -> int color)
+	x = clamp(4.0f*(1.0f-x), 0.0f, 4.0f);
+	float r=1.0f, g=0.0f, b=0.0f;
+	if(x<0.66666667f) { // white - yellow
+		g = 1.0f;
+		b = 1.0f-x*1.5f;
+	} else if(x<2.0f) { // yellow - red
+		g = 1.5f-x*0.75f;
+	} else if(x<3.0f) { // red - violet
+		r = 2.0f-x*0.5f;
+		b = x-2.0f;
+	} else { // violet - black
+		r = 2.0f-x*0.5f;
+		b = 4.0f-x;
+	}
+	return color(r, g, b);
+}
+inline int colorscale_twocolor(const float x, const int background_color) { // coloring scheme (float [0, 1] -> int color)
+	return x>0.5f ? color_mix(0xFFAA00, background_color, clamp(2.0f*x-1.0f, 0.0f, 1.0f)) : color_mix(background_color, 0x0080FF, clamp(2.0f*x, 0.0f, 1.0f)); // red - gray - blue
+}
+
+#define color_black      0
+#define color_dark_blue  1
+#define color_dark_green 2
+#define color_light_blue 3
+#define color_dark_red   4
+#define color_magenta    5
+#define color_orange     6
+#define color_light_gray 7
+#define color_gray       8
+#define color_blue       9
+#define color_green     10
+#define color_cyan      11
+#define color_red       12
+#define color_pink      13
+#define color_yellow    14
+#define color_white     15
 
 #ifdef UTILITIES_CONSOLE_INPUT
 #define UTILITIES_CONSOLE_COLOR
@@ -3013,27 +3168,14 @@ inline uint hsv_to_rgb(const float3& hsv) {
 #elif defined(__linux__)||defined(__APPLE__)
 #include <sys/ioctl.h> // for getting console size
 #include <unistd.h> // for getting path of executable
-#else // Linux
+#if defined(__APPLE__)
+#include <mach-o/dyld.h> // _NSGetExecutablePath
+#endif // Apple
+#else // Linux or Apple
 #undef UTILITIES_CONSOLE_COLOR
 #endif // Windows/Linux
 #endif // UTILITIES_CONSOLE_COLOR
 #ifdef UTILITIES_CONSOLE_COLOR
-#define color_black      0
-#define color_dark_blue  1
-#define color_dark_green 2
-#define color_light_blue 3
-#define color_dark_red   4
-#define color_magenta    5
-#define color_orange     6
-#define color_light_gray 7
-#define color_gray       8
-#define color_blue       9
-#define color_green     10
-#define color_cyan      11
-#define color_red       12
-#define color_pink      13
-#define color_yellow    14
-#define color_white     15
 inline string get_exe_path() { // returns path where executable is located, ends with a "/"
 	string path = "";
 #if defined(_WIN32)
@@ -3042,6 +3184,11 @@ inline string get_exe_path() { // returns path where executable is located, ends
 	std::wstring ws(wc);
 	transform(ws.begin(), ws.end(), back_inserter(path), [](wchar_t c) { return (char)c; });
 	path = replace(path, "\\", "/");
+#elif defined(__APPLE__)
+	uint length = 0u;
+	_NSGetExecutablePath(nullptr, &length);
+	path.resize(length+1u, 0);
+	_NSGetExecutablePath(path.data(), &length);
 #else // Linux
 	char c[260];
 	int length = (int)readlink("/proc/self/exe", c, 260);
@@ -3264,8 +3411,8 @@ inline void print_no_reset(const string& s, const int textcolor, const int backg
 	print_color(textcolor, backgroundcolor);
 	std::cout << s;
 }
-static Image* print_image_rescaled = nullptr;
 inline void print_image(const Image* image, const uint textwidth=0u, const uint textheight=0u) {
+	static Image* image_rescaled = nullptr;
 	uint newwidth=(uint)(CONSOLE_WIDTH), newheight=(uint)(CONSOLE_WIDTH)*9u/16u;
 	if(textwidth==0u&&textheight==0u) {
 		uint fontwidth=8u, fontheight=16u;
@@ -3277,16 +3424,16 @@ inline void print_image(const Image* image, const uint textwidth=0u, const uint 
 		newwidth = textwidth;
 		newheight = 2u*textheight;
 	}
-	print_image_rescaled = rescale(image, newwidth, newheight, print_image_rescaled);
+	image_rescaled = rescale(image, newwidth, newheight, image_rescaled);
 #if defined(_WIN32)
 	const string s = string("")+(char)223; // trick to double vertical resolution: use graphic character
 	for(uint y=0u; y<newheight-1u; y+=2u) {
-		int ltc = get_console_color(print_image_rescaled->color(0u, y   ));
-		int lbc = get_console_color(print_image_rescaled->color(0u, y+1u));
+		int ltc = get_console_color(image_rescaled->color(0u, y   ));
+		int lbc = get_console_color(image_rescaled->color(0u, y+1u));
 		string segment = s;
 		for(uint x=1; x<newwidth; x++) {
-			const int tc = get_console_color(print_image_rescaled->color(x, y   ));
-			const int bc = get_console_color(print_image_rescaled->color(x, y+1u));
+			const int tc = get_console_color(image_rescaled->color(x, y   ));
+			const int bc = get_console_color(image_rescaled->color(x, y+1u));
 			if(tc==ltc&&bc==lbc) { // still the same color
 				segment += s; // skip color change command if color is the same for consecutive pixels
 			} else { // color has changed
@@ -3305,8 +3452,8 @@ inline void print_image(const Image* image, const uint textwidth=0u, const uint 
 	for(uint y=0u; y<newheight-1u; y+=2u) {
 		int ltc=-1, lbc=-1;
 		for(uint x=0u; x<newwidth; x++) {
-			const int tc = get_console_color(print_image_rescaled->color(x, y   ));
-			const int bc = get_console_color(print_image_rescaled->color(x, y+1u));
+			const int tc = get_console_color(image_rescaled->color(x, y   ));
+			const int bc = get_console_color(image_rescaled->color(x, y+1u));
 			if(tc==ltc&&bc==lbc) { // still the same color
 				r += s; // skip color change command if color is the same for consecutive pixels
 			} else { // color has changed
@@ -3321,6 +3468,7 @@ inline void print_image(const Image* image, const uint textwidth=0u, const uint 
 #endif // Windows/Linux
 }
 inline void print_image_bw(const Image* image, const uint textwidth=0u, const uint textheight=0u) { // black and white mode
+	static Image* image_rescaled = nullptr;
 	uint newwidth=(uint)(CONSOLE_WIDTH), newheight=(uint)(CONSOLE_WIDTH)*9u/16u;
 	if(textwidth==0u&&textheight==0u) {
 		uint fontwidth=8u, fontheight=16u;
@@ -3332,7 +3480,7 @@ inline void print_image_bw(const Image* image, const uint textwidth=0u, const ui
 		newwidth = textwidth;
 		newheight = 2u*textheight;
 	}
-	print_image_rescaled = rescale(image, newwidth, newheight, print_image_rescaled);
+	image_rescaled = rescale(image, newwidth, newheight, image_rescaled);
 	const string bb = " ";
 #if defined(_WIN32)
 	const string ww = string("")+(char)219; // trick to double vertical resolution: use graphic characters
@@ -3346,35 +3494,24 @@ inline void print_image_bw(const Image* image, const uint textwidth=0u, const ui
 	string r = ""; // append to a string, print string in the end (much faster)
 	for(uint y=0u; y<newheight-1u; y+=2u) {
 		for(uint x=0u; x<newwidth; x++) {
-			const bool t = brightness(print_image_rescaled->color(x, y   ))>127;
-			const bool b = brightness(print_image_rescaled->color(x, y+1u))>127;
+			const bool t = brightness(image_rescaled->color(x, y   ))>127;
+			const bool b = brightness(image_rescaled->color(x, y+1u))>127;
 			r += t ? b ? ww : wb : b ? bw : bb;
 		}
 		r += "\n"; // add new line
 	}
 	print(r);
 }
-#ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-static bool print_image_dither_lookup_initialized = false;
-static ushort* print_image_dither_lookup = nullptr;
-inline void print_image_dither_initialize_lookup_thread(const int k, const int N) {
-	for(int i=k*16777216/N; i<(k+1)*16777216/N; i++) print_image_dither_lookup[i] = get_console_color_dither(i);
-}
-inline void print_image_dither_initialize_lookup() { // initialize lookup table parallelized (much faster)
-	if(!print_image_dither_lookup_initialized) {
-		print_image_dither_lookup = new ushort[16777216];
-		const int N = (int)thread::hardware_concurrency(); // number of CPU threads
-		thread* threads = new thread[N];
-		for(int k=0; k<N; k++) threads[k] = thread(print_image_dither_initialize_lookup_thread, k, N);
-		for(int k=0; k<N; k++) threads[k].join();
-		delete[] threads;
-		print_image_dither_lookup_initialized = true;
-	}
-}
-#endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 inline void print_image_dither(const Image* image, const uint textwidth=0u, const uint textheight=0u) {
+	static Image* image_rescaled = nullptr;
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-	print_image_dither_initialize_lookup();
+	static ushort* dither_lookup = nullptr;
+	if(dither_lookup==nullptr) {
+		dither_lookup = new ushort[16777216];
+		parallel_for(16777216u, [&](uint n) { // initialize lookup table parallelized (much faster)
+			dither_lookup[n] = get_console_color_dither((int)n);
+		});
+	}
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 	uint newwidth=(uint)(CONSOLE_WIDTH), newheight=(uint)(CONSOLE_WIDTH)*9u/16u;
 	if(textwidth==0u&&textheight==0u) {
@@ -3387,23 +3524,23 @@ inline void print_image_dither(const Image* image, const uint textwidth=0u, cons
 		newwidth = textwidth;
 		newheight = textheight;
 	}
-	print_image_rescaled = rescale(image, newwidth, newheight, print_image_rescaled);
+	image_rescaled = rescale(image, newwidth, newheight, image_rescaled);
 #if defined(_WIN32)
 	const string s[3] = { string("")+(char)176, string("")+(char)177, string("")+(char)178 };
 	for(uint y=0u; y<newheight; y++) {
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-		const int dither = (int)print_image_dither_lookup[print_image_rescaled->color(0u, y)];
+		const int dither = (int)dither_lookup[image_rescaled->color(0u, y)];
 #else // UTILITIES_CONSOLE_DITHER_LOOKUP
-		const int dither = (int)get_console_color_dither(print_image_rescaled->color(0u, y));
+		const int dither = (int)get_console_color_dither(image_rescaled->color(0u, y));
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 		const int shade = dither>>8;
 		int ltc=(dither>>4)&0xF, lbc=dither&0xF;
 		string segment = s[shade];
 		for(uint x=1u; x<newwidth; x++) {
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-			const int dither = (int)print_image_dither_lookup[print_image_rescaled->color(x, y)];
+			const int dither = (int)dither_lookup[image_rescaled->color(x, y)];
 #else // UTILITIES_CONSOLE_DITHER_LOOKUP
-			const int dither = (int)get_console_color_dither(print_image_rescaled->color(x, y));
+			const int dither = (int)get_console_color_dither(image_rescaled->color(x, y));
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 			const int shade = dither>>8;
 			const int tc=(dither>>4)&0xF, bc=dither&0xF;
@@ -3425,9 +3562,9 @@ inline void print_image_dither(const Image* image, const uint textwidth=0u, cons
 		int ltc=-1, lbc=-1;
 		for(uint x=0u; x<newwidth; x++) {
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-			const int dither = (int)print_image_dither_lookup[print_image_rescaled->color(x, y)];
+			const int dither = (int)dither_lookup[image_rescaled->color(x, y)];
 #else // UTILITIES_CONSOLE_DITHER_LOOKUP
-			const int dither = (int)get_console_color_dither(print_image_rescaled->color(x, y));
+			const int dither = (int)get_console_color_dither(image_rescaled->color(x, y));
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 			const int shade = dither>>8;
 			const int tc=(dither>>4)&0xF, bc=dither&0xF;
@@ -3443,10 +3580,17 @@ inline void print_image_dither(const Image* image, const uint textwidth=0u, cons
 	print(r);
 #endif // Windows/Linux
 }
-static Image* print_video_lastframe = nullptr;
 inline void print_video_dither(const Image* image, const uint textwidth=0u, const uint textheight=0u) { // optimized for video (only draws pixels that differ from last frame)
+	static Image* video_lastframe = nullptr;
+	static Image* image_rescaled = nullptr;
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-	print_image_dither_initialize_lookup();
+	static ushort* dither_lookup = nullptr;
+	if(dither_lookup==nullptr) {
+		dither_lookup = new ushort[16777216];
+		parallel_for(16777216u, [&](uint n) { // initialize lookup table parallelized (much faster)
+			dither_lookup[n] = get_console_color_dither((int)n);
+		});
+	}
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 	uint newwidth=(uint)(CONSOLE_WIDTH), newheight=(uint)(CONSOLE_WIDTH)*9u/16u;
 	if(textwidth==0u&&textheight==0u) {
@@ -3459,38 +3603,39 @@ inline void print_video_dither(const Image* image, const uint textwidth=0u, cons
 		newwidth = textwidth;
 		newheight = textheight;
 	}
-	print_image_rescaled = rescale(image, newwidth, newheight, print_image_rescaled); // do resolution downsampling
+	image_rescaled = rescale(image, newwidth, newheight, image_rescaled); // do resolution downsampling
 	for(uint i=0u; i<newwidth*newheight; i++) { // do color subsampling
 #ifdef UTILITIES_CONSOLE_DITHER_LOOKUP
-		print_image_rescaled->set_color(i, (int)print_image_dither_lookup[print_image_rescaled->color(i)]);
+		image_rescaled->set_color(i, (int)dither_lookup[image_rescaled->color(i)]);
 #else // UTILITIES_CONSOLE_DITHER_LOOKUP
-		print_image_rescaled->set_color(i, (int)get_console_color_dither(print_image_rescaled->color(i)));
+		image_rescaled->set_color(i, (int)get_console_color_dither(image_rescaled->color(i)));
 #endif // UTILITIES_CONSOLE_DITHER_LOOKUP
 	}
-	bool print_video_lastframe_is_new = false;
-	if(print_video_lastframe==nullptr||print_video_lastframe->width()!=newwidth||print_video_lastframe->height()!=newheight) {
-		delete print_video_lastframe;
-		print_video_lastframe = new Image(newwidth, newheight);
-		print_video_lastframe_is_new = true;
+	bool video_lastframe_is_new = false;
+	if(video_lastframe==nullptr||video_lastframe->width()!=newwidth||video_lastframe->height()!=newheight) {
+		delete video_lastframe;
+		video_lastframe = new Image(newwidth, newheight);
+		video_lastframe_is_new = true;
+		clear_console();
 	}
-	uint changed_pixels = 0u; // reuse print_video_lastframe as list of all changed pixels
+	uint changed_pixels = 0u; // reuse video_lastframe as list of all changed pixels
 	for(uint i=0u; i<newwidth*newheight; i++) {
-		if(print_video_lastframe_is_new || print_image_rescaled->color(i)!=print_video_lastframe->color(i)) print_video_lastframe->set_color(changed_pixels++, (int)i);
+		if(video_lastframe_is_new||image_rescaled->color(i)!=video_lastframe->color(i)) video_lastframe->set_color(changed_pixels++, (int)i);
 	}
 	if(changed_pixels>0u) { // at least one pixel has changed
 #if defined(_WIN32)
 		const string s[3] = { string("")+(char)176, string("")+(char)177, string("")+(char)178 };
-		const uint n = (uint)print_video_lastframe->color(0); // do first entry manually
+		const uint n = (uint)video_lastframe->color(0); // do first entry manually
 		uint lx=n%newwidth, ly=n/newwidth;
-		const int dither = print_image_rescaled->color(lx, ly);
+		const int dither = image_rescaled->color(lx, ly);
 		const int shade = dither>>8;
 		int ltc=(dither>>4)&0xF, lbc=dither&0xF;
 		set_console_cursor(lx, ly);
 		string segment = s[shade]; // reset segment
 		for(uint i=1u; i<changed_pixels; i++) {
-			const uint n = (uint)print_video_lastframe->color(i); // get index of changed pixel
+			const uint n = (uint)video_lastframe->color(i); // get index of changed pixel
 			const uint x=n%newwidth, y=n/newwidth; // get coordinates of changed pixel
-			const int dither = print_image_rescaled->color(x, y); // get color of changed pixel
+			const int dither = image_rescaled->color(x, y); // get color of changed pixel
 			const int shade = dither>>8;
 			const int tc=(dither>>4)&0xF, bc=dither&0xF;
 			if(tc!=ltc||bc!=lbc||x!=lx+1u||y!=ly) { // color has changed or cursor has moved
@@ -3513,9 +3658,9 @@ inline void print_video_dither(const Image* image, const uint textwidth=0u, cons
 		uint lx=max_uint, ly=max_uint;
 		int ltc=-1, lbc=-1;
 		for(uint i=0u; i<changed_pixels; i++) {
-			const uint n = (uint)print_video_lastframe->color(i); // get index of changed pixel
+			const uint n = (uint)video_lastframe->color(i); // get index of changed pixel
 			const uint x=n%newwidth, y=n/newwidth; // get coordinates of changed pixel
-			const int dither = print_image_rescaled->color(x, y); // get color of changed pixel
+			const int dither = image_rescaled->color(x, y); // get color of changed pixel
 			const int shade = dither>>8;
 			const int tc=(dither>>4)&0xF, bc=dither&0xF;
 			if(x!=lx+1u||y!=ly) { // cursor has moved
@@ -3530,14 +3675,11 @@ inline void print_video_dither(const Image* image, const uint textwidth=0u, cons
 			lx = x;
 			ly = y;
 		}
-		r += "\033[0m"; // reset color
-		print(r);
+		print(r+"\033[0m"); // reset color
 #endif // Windows/Linux
 	}
 	set_console_cursor(0u, newheight);
-	Image* swap = print_video_lastframe; // swap currentframe and lastframe
-	print_video_lastframe = print_image_rescaled;
-	print_image_rescaled = swap;
+	std::swap(image_rescaled, video_lastframe); // swap currentframe and lastframe
 }
 inline Image* screenshot(Image* image=nullptr) {
 #if defined(_WIN32)
@@ -3584,10 +3726,10 @@ inline void print_color_test() {
 	println();
 }
 #ifdef UTILITIES_CONSOLE_INPUT
-// ASCII codes (key>0): 8 backspace, 9 tab, 10 newline, 27 escape, 127 delete, !"#$%&'()*+,-./0-9:;<=>?@A-Z[]^_`a-z{|}~üäÄöÖÜßµ´§°¹³²
+// ASCII codes (key>0): 8 backspace, 9 tab, 10 newline, 27 escape, 127 delete, !"#$%&'()*+,-./0-9:;<=>?@A-Z[]^_`a-z{|}~Ã¼Ã¤Ã„Ã¶Ã–ÃœÃŸÂµÂ´Â§Â°Â¹Â³Â²
 // control key codes (key<0): -38/-40/-37/-39 up/down/left/right arrow, -33/-34 page up/down, -36/-35 pos1/end
 // other key codes (key<0): -45 insert, -144 num lock, -20 caps lock, -91 windows key, -93 kontext menu key, -112 to -123 F1 to F12
-// not working: ¹ (251), num lock (-144), caps lock (-20), windows key (-91), kontext menu key (-93), F11 (-122)
+// not working: Â¹ (251), num lock (-144), caps lock (-20), windows key (-91), kontext menu key (-93), F11 (-122)
 #if defined(_WIN32)
 inline int key_press() { // not working: F11 (-122, toggles fullscreen)
 	KEY_EVENT_RECORD keyevent;
@@ -3613,7 +3755,7 @@ inline int key_press() { // not working: F11 (-122, toggles fullscreen)
 				case  -12: continue; // disable num block 5 with num lock deactivated
 				case   13: return  10; // enter
 				case  -46: return 127; // delete
-				case  -49: return 251; // ¹
+				case  -49: return 251; // Â¹
 				case    0: continue;
 				case    1: continue; // disable Ctrl + a (selects all text)
 				case    2: continue; // disable Ctrl + b
@@ -3648,7 +3790,7 @@ inline int key_press() { // not working: F11 (-122, toggles fullscreen)
 }
 #else // Linux
 #include <termios.h>
-inline int key_press() { // not working: ¹ (251), num lock (-144), caps lock (-20), windows key (-91), kontext menu key (-93)
+inline int key_press() { // not working: Â¹ (251), num lock (-144), caps lock (-20), windows key (-91), kontext menu key (-93)
 	struct termios term;
 	tcgetattr(0, &term);
 	while(true) {
@@ -3662,7 +3804,7 @@ inline int key_press() { // not working: ¹ (251), num lock (-144), caps lock (-2
 			ioctl(0, FIONREAD, &nbbytes); // 0 is STDIN
 		}
 		int key = (int)getchar();
-		if(key==27||key==194||key==195) { // escape, 194/195 is escape for °ß´äöüÄÖÜ
+		if(key==27||key==194||key==195) { // escape, 194/195 is escape for Â°ÃŸÂ´Ã¤Ã¶Ã¼Ã„Ã–Ãœ
 			key = (int)getchar();
 			if(key==91) { // [ following escape
 				key = (int)getchar(); // get code of next char after \e[
@@ -3693,19 +3835,19 @@ inline int key_press() { // not working: ¹ (251), num lock (-144), caps lock (-2
 			case  127: return   8; // backspace
 			case  -27: return  27; // escape
 			case  -51: return 127; // delete
-			case -164: return 132; // ä
-			case -182: return 148; // ö
-			case -188: return 129; // ü
-			case -132: return 142; // Ä
-			case -150: return 153; // Ö
-			case -156: return 154; // Ü
-			case -159: return 225; // ß
-			case -181: return 230; // µ
-			case -167: return 245; // §
-			case -176: return 248; // °
-			case -178: return 253; // ²
-			case -179: return 252; // ³
-			case -180: return 239; // ´
+			case -164: return 132; // Ã¤
+			case -182: return 148; // Ã¶
+			case -188: return 129; // Ã¼
+			case -132: return 142; // Ã„
+			case -150: return 153; // Ã–
+			case -156: return 154; // Ãœ
+			case -159: return 225; // ÃŸ
+			case -181: return 230; // Âµ
+			case -167: return 245; // Â§
+			case -176: return 248; // Â°
+			case -178: return 253; // Â²
+			case -179: return 252; // Â³
+			case -180: return 239; // Â´
 			case  -65: return -38; // up arrow
 			case  -66: return -40; // down arrow
 			case  -68: return -37; // left arrow
@@ -3747,6 +3889,13 @@ inline int key_press() { // not working: ¹ (251), num lock (-144), caps lock (-2
 }
 #endif // Windows/Linux
 #endif // UTILITIES_CONSOLE_INPUT
+#else // UTILITIES_CONSOLE_COLOR
+inline void print(const string& s, const int textcolor) {
+	std::cout << s;
+}
+inline void print(const string& s, const int textcolor, const int backgroundcolor) {
+	std::cout << s;
+}
 #endif // UTILITIES_CONSOLE_COLOR
 
 #ifdef UTILITIES_REGEX
@@ -3778,32 +3927,42 @@ inline string replace_regex(const string& s, const string& from, const string& t
 inline bool is_number(const string& s) {
 	return equals_regex(s, "\\d+(u|l|ul|ll|ull)?")||equals_regex(s, "0x(\\d|[a-fA-F])+(u|l|ul|ll|ull)?")||equals_regex(s, "0b[01]+(u|l|ul|ll|ull)?")||equals_regex(s, "(((\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+[fF]?)?)|(\\d+\\.\\d*|\\.\\d+)[fF]?)");
 }
-inline void print_message(const string& message, const string& keyword="") { // print formatted message
-	const uint k=length(keyword), w=CONSOLE_WIDTH-4u-k;
-	uint l = 0u;
-	string p="\r| "+keyword, f=" ";
+inline void print_message(const string& message, const string& keyword="", const int keyword_color=-1, const int colons=true) { // print formatted message
+	const uint k=length(keyword)+2u, w=CONSOLE_WIDTH-4u-k;
+	string p=colons?": ":"  ", f="";
 	for(uint j=0u; j<k; j++) f += " ";
 	vector<string> v = split_regex(message, "[\\s\\0]+");
+	uint l = 0u; // length of current line of words
 	for(uint i=0u; i<(uint)v.size(); i++) {
 		const string word = v.at(i);
 		const uint wordlength = length(word);
-		l += wordlength+1u;
-		if(l<=w+1u||wordlength>w) {
+		l += wordlength+1u; // word + space
+		if(l<=w+1u) { // word fits -> append word and space
 			p += word+" ";
-		} else {
-			l = l-length(v.at(i--))-1u;
+		} else if(wordlength>w) { // word overflows -> split word into next line
+			p += substring(word, 0, w-(l-wordlength-1u))+" |\n| "+f;
+			v[i] = substring(v[i], w-(l-wordlength-1u)); i--; // reuse same vector element for overflowing part, decrement i to start next line with this overflowing part
+			l = 0u; // reset line length
+		} else { // word does not fit -> fill remaining line with spaces
+			l = l-length(v.at(i--))-1u; // remove word from line, decrement i to start next line with this word
 			for(uint j=l; j<=w; j++) p += " ";
-			p += "|\n|"+f;
-			l = 0u;
+			p += "|\n| "+f;
+			l = 0u; // reset line length
 		}
 	}
 	for(uint j=l; j<=w; j++) p += " ";
+	if(keyword_color<0||keyword_color>15) {
+		print("\r| "+keyword);
+	} else {
+		print("\r| ");
+		print(keyword, keyword_color);
+	}
 	println(p+"|");
 }
 inline void print_error(const string& s) { // print formatted error message
-	print_message(s, "Error: ");
+	print_message(s, "Error", color_red);
 #ifdef _WIN32
-	print_message("Press Enter to exit.", "       ");
+	print_message("Press Enter to exit.", "     ", -1, false);
 #endif // _WIN32
 	string b = "";
 	for(int i=0; i<CONSOLE_WIDTH-2; i++) b += "-";
@@ -3814,10 +3973,10 @@ inline void print_error(const string& s) { // print formatted error message
 	exit(1);
 }
 inline void print_warning(const string& s) { // print formatted warning message
-	print_message(s, "Warning: ");
+	print_message(s, "Warning", color_orange);
 }
 inline void print_info(const string& s) { // print formatted info message
-	print_message(s, "Info: ");
+	print_message(s, "Info", color_green);
 }
 
 inline void parse_sanity_check_error(const string& s, const string& regex, const string& type) {
@@ -3881,7 +4040,33 @@ inline double to_double(const string& s, const double default_value) {
 	const string t = trim(s);
 	return parse_sanity_check(t, "[+-]?(((\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+[fF]?)?)|(\\d+\\.\\d*|\\.\\d+)[fF]?)") ? atof(t.c_str()) : default_value;
 }
+#else // UTILITIES_REGEX
+inline void print_message(const string& message, const string& keyword="", const int keyword_color=-1, const int colons=true) { // print message
+	println(keyword+": "+message);
+}
+inline void print_error(const string& s) { // print error message
+	println("Error: "+s);
+#ifdef _WIN32
+	println("       Press Enter to exit.");
+	wait();
+#endif //_WIN32
+	exit(1);
+}
+inline void print_warning(const string& s) { // print warning message
+	println("Warning: "+s);
+}
+inline void print_info(const string& s) { // print info message
+	println("Info: "+s);
+}
 #endif // UTILITIES_REGEX
+
+inline void set_environment_variable(char* s) { // usage: set_environment_variable((char*)"VARIABLE=VALUE");
+#if defined(_WIN32)
+	(void)_putenv(s);
+#elif defined(__linux__)
+	(void) putenv(s);
+#endif // Linux
+}
 
 #ifdef UTILITIES_FILE
 #include <fstream> // read/write files
@@ -3910,7 +4095,7 @@ inline string create_file_extension(const string& filename, const string& extens
 }
 inline string read_file(const string& filename) {
 	std::ifstream file(filename, std::ios::in);
-	if(file.fail()) println("\rError: File \""+filename+"\" does not exist!");
+	if(file.fail()) print_error("File \""+filename+"\" does not exist!");
 	const string r((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 	file.close();
 	return r;
@@ -3922,22 +4107,18 @@ inline void write_file(const string& filename, const string& content="") {
 	file.close();
 }
 inline void write_line(const string& filename, const string& content="") {
-	string t = trim(content);
-	if((int)t.length()>0) {
-		const string s = content+t.substr(t.length()-1, 1)=="\n"?"":"\n"; // add new line if needed
-		//write_file(filename, read_file(filename)+s); // write content as new line to existing file
-		std::ofstream file(filename, std::ios::ios_base::app);
-		file.write(s.c_str(), s.length());
-		file.close();
-	}
+	const string s = content+(ends_with(content, "\n")?"":"\n"); // add new line if needed
+	std::ofstream file(filename, std::ios::ios_base::app);
+	file.write(s.c_str(), s.length());
+	file.close();
 }
-template<typename T> inline void write_file(const string& filename, const uint n, const T* y, const string& header="") {
+template<typename T> inline void write_file(const string& filename, const string& header, const uint n, const T* y) {
 	string s = header;
 	if(length(s)>0u && !ends_with(s, "\n")) s += "\n";
 	for(uint i=0u; i<n; i++) s += to_string(i)+"\t"+to_string(y[i])+"\n";
 	write_file(filename, s);
 }
-template<typename T, typename U> inline void write_file(const string& filename, const uint n, const T* x, const U* y, const string& header="") {
+template<typename T, typename U> inline void write_file(const string& filename, const string& header, const uint n, const T* x, const U* y) {
 	string s = header;
 	if(length(s)>0u && !ends_with(s, "\n")) s += "\n";
 	for(uint i=0u; i<n; i++) s += to_string(x[i])+"\t"+to_string(y[i])+"\n";
@@ -3946,7 +4127,7 @@ template<typename T, typename U> inline void write_file(const string& filename, 
 #pragma warning(disable:6385)
 inline Image* read_bmp(const string& filename, Image* image=nullptr) {
 	std::ifstream file(create_file_extension(filename, ".bmp"), std::ios::in|std::ios::binary);
-	if(file.fail()) println("\rError: File \""+filename+"\" does not exist!");
+	if(file.fail()) print_error("File \""+filename+"\" does not exist!");
 	uint width=0u, height=0u;
 	file.seekg(0, std::ios::end);
 	const uint filesize = (uint)file.tellg();
@@ -3954,13 +4135,13 @@ inline Image* read_bmp(const string& filename, Image* image=nullptr) {
 	uchar* data = new uchar[filesize];
 	file.read((char*)data, filesize);
 	file.close();
-	if(filesize==0u) println("\rError: File \""+filename+"\" is corrupt!");
+	if(filesize==0u) print_error("File \""+filename+"\" is corrupt!");
 	for(uint i=0u; i<4u; i++) {
 		width  |= data[18+i]<<(8u*i);
 		height |= data[22+i]<<(8u*i);
 	}
 	const uint pad=(4u-(3u*width)%4u)%4u, imagesize=(3u*width+pad)*height;
-	if(filesize!=54u+imagesize) println("\rError: File \""+filename+"\" is corrupt or unsupported!");
+	if(filesize!=54u+imagesize) print_error("File \""+filename+"\" is corrupt or unsupported!");
 	if(image==nullptr||image->width()!=width||image->height()!=height) {
 		delete image;
 		image = new Image(width, height);
@@ -3984,7 +4165,7 @@ inline void write_bmp(const string& filename, const Image* image) {
 		header[22u+i] = (uchar)((image->height()>>(8u*i))&255);
 	}
 	uchar* data = new uchar[filesize];
-	for(uint i=0u; i<54; i++) data[i] = header[i];
+	for(uint i=0u; i<54u; i++) data[i] = header[i];
 	for(uint y=0u; y<image->height(); y++) {
 		for(uint x=0u; x<image->width(); x++) {
 			const int color = image->color(x, image->height()-1u-y);
@@ -4002,14 +4183,14 @@ inline void write_bmp(const string& filename, const Image* image) {
 }
 inline Image* read_qoi(const string& filename, Image* image=nullptr) { // 4-channel .qoi decoder, source: https://qoiformat.org/qoi-specification.pdf
 	std::ifstream file(create_file_extension(filename, ".qoi"), std::ios::in|std::ios::binary);
-	if(file.fail()) println("\rError: File \""+filename+"\" does not exist!");
+	if(file.fail()) print_error("File \""+filename+"\" does not exist!");
 	file.seekg(0, std::ios::end);
 	const uint filesize = (uint)file.tellg();
 	file.seekg(0, std::ios::beg);
 	uchar* data = new uchar[filesize];
 	file.read((char*)data, filesize);
 	file.close();
-	if(filesize<22u||((int*)data)[0]!=1718185841) println("\rError: File \""+filename+"\" is corrupt!");
+	if(filesize<22u||((int*)data)[0]!=1718185841) print_error("File \""+filename+"\" is corrupt!");
 	uint width=0u, height=0u;
 	for(uint i=0u; i<4u; i++) {
 		width  |= data[ 7u-i]<<(8u*i);
@@ -4180,7 +4361,18 @@ struct Mesh { // triangle mesh
 			p1[i] = scale*(p1[i]-center)+center;
 			p2[i] = scale*(p2[i]-center)+center;
 		}
-		find_bounds();
+		pmin = scale*(pmin-center)+center;
+		pmax = scale*(pmax-center)+center;
+	}
+	inline void translate(const float3& translation) {
+		for(uint i=0u; i<triangle_number; i++) {
+			p0[i] += translation;
+			p1[i] += translation;
+			p2[i] += translation;
+		}
+		center += translation;
+		pmin += translation;
+		pmax += translation;
 	}
 	inline void rotate(const float3x3& rotation) {
 		for(uint i=0u; i<triangle_number; i++) {
@@ -4190,22 +4382,43 @@ struct Mesh { // triangle mesh
 		}
 		find_bounds();
 	}
+	inline void set_center(const float3& center) {
+		this->center = center;
+	}
+	inline const float3& get_center() const {
+		return center;
+	}
+	inline const float3 get_bounding_box_size() const {
+		return pmax-pmin;
+	}
+	inline const float3 get_bounding_box_center() const {
+		return 0.5f*(pmin+pmax);
+	}
+	inline float get_min_size() const {
+		return fmin(fmin(pmax.x-pmin.x, pmax.y-pmin.y), pmax.z-pmin.z);
+	}
+	inline float get_max_size() const {
+		return fmax(fmax(pmax.x-pmin.x, pmax.y-pmin.y), pmax.z-pmin.z);
+	}
+	inline float get_scale_for_box_fit(const float3& box_size) const { // scale factor to exactly fit mesh bounding box in simulation box
+		return fmin(fmin(box_size.x/(pmax.x-pmin.x), box_size.y/(pmax.y-pmin.y)), box_size.z/(pmax.z-pmin.z));
+	}
 };
-inline Mesh* read_stl(const string& path, const float3& box_size, const float3& center, const float3x3& rotation, const float size) { // read binary .stl file
+inline Mesh* read_stl_raw(const string& path, const bool reposition, const float3& box_size, const float3& center, const float3x3& rotation, const float size) { // read binary .stl file
 	const string filename = create_file_extension(path, ".stl");
 	std::ifstream file(filename, std::ios::in|std::ios::binary);
-	if(file.fail()) println("\rError: File \""+filename+"\" does not exist!");
+	if(file.fail()) print_error("File \""+filename+"\" does not exist!");
 	file.seekg(0, std::ios::end);
 	const uint filesize = (uint)file.tellg();
 	file.seekg(0, std::ios::beg);
 	uchar* data = new uchar[filesize];
 	file.read((char*)data, filesize);
 	file.close();
-	if(filesize==0u) println("\rError: File \""+filename+"\" is corrupt!");
+	if(filesize==0u) print_error("File \""+filename+"\" is corrupt!");
 	const uint triangle_number = ((uint*)data)[20];
 	uint counter = 84u;
-	if(triangle_number>0u&&filesize==84u+50u*triangle_number) println("Loading \""+filename+"\" with "+to_string(triangle_number)+" triangles.");
-	else println("\rError: File \""+filename+"\" is corrupt or unsupported! Only binary .stl files are supported.");
+	if(triangle_number>0u&&filesize==84u+50u*triangle_number) print_info("Loading \""+filename+"\" with "+to_string(triangle_number)+" triangles.");
+	else print_error("File \""+filename+"\" is corrupt or unsupported! Only binary .stl files are supported.");
 	Mesh* mesh = new Mesh(triangle_number, center);
 	mesh->p0[0] = float3(0.0f); // to fix warning C6001
 	for(uint i=0u; i<triangle_number; i++) {
@@ -4217,16 +4430,15 @@ inline Mesh* read_stl(const string& path, const float3& box_size, const float3& 
 	}
 	delete[] data;
 	mesh->find_bounds();
-	const float3 offset = -0.5f*(mesh->pmin+mesh->pmax); // auto-rescale mesh
 	float scale = 1.0f;
-	if(size>0) { // rescale to specified size
-		scale = size/fmax(fmax(mesh->pmax.x-mesh->pmin.x, mesh->pmax.y-mesh->pmin.y), mesh->pmax.z-mesh->pmin.z);
-	} else { // auto-rescale to largest possible size
-		const float scale_x = box_size.x/(mesh->pmax.x-mesh->pmin.x);
-		const float scale_y = box_size.y/(mesh->pmax.y-mesh->pmin.y);
-		const float scale_z = box_size.z/(mesh->pmax.z-mesh->pmin.z);
-		scale = fmin(fmin(scale_x, scale_y), scale_z);
+	if(size==0.0f) { // auto-rescale to largest possible size
+		scale = mesh->get_scale_for_box_fit(box_size);
+	} else if(size>0.0f) { // rescale longest bounding box side length of mesh to specified size
+		scale = size/mesh->get_max_size();
+	} else { // rescale to specified size relative to original size (input size as negative number)
+		scale = -size;
 	}
+	const float3 offset = reposition ? -0.5f*(mesh->pmin+mesh->pmax) : float3(0.0f); // auto-reposition mesh
 	for(uint i=0u; i<triangle_number; i++) { // rescale mesh
 		mesh->p0[i] = center+scale*(offset+mesh->p0[i]);
 		mesh->p1[i] = center+scale*(offset+mesh->p1[i]);
@@ -4235,8 +4447,14 @@ inline Mesh* read_stl(const string& path, const float3& box_size, const float3& 
 	mesh->find_bounds();
 	return mesh;
 }
-inline Mesh* read_stl(const string& path, const float3& box_size, const float3& center, const float size) { // read binary .stl file (no rotation)
-	return read_stl(path, box_size, center, float3x3(1.0f), size);
+inline Mesh* read_stl(const string& path, const float3& box_size, const float3& center, const float3x3& rotation, const float size) { // read binary .stl file (rescale and reposition)
+	return read_stl_raw(path, true, box_size, center, rotation, size);
+}
+inline Mesh* read_stl(const string& path, const float3& box_size, const float3& center, const float size) { // read binary .stl file (rescale and reposition, no rotation)
+	return read_stl_raw(path, true, box_size, center, float3x3(1.0f), size);
+}
+inline Mesh* read_stl(const string& path, const float scale=1.0f, const float3x3& rotation=float3x3(1.0f), const float3& offset=float3(0.0f)) { // read binary .stl file (do not auto-rescale and auto-reposition)
+	return read_stl_raw(path, false, float3(1.0f), offset, rotation, -fabs(scale));
 }
 
 class Configuration_File {
